@@ -184,21 +184,41 @@ sudo netfilter-persistent save
 
 ### Fix DNS (broken by the INPUT block)
 
-Libvirt runs a DNS server on `192.168.122.1`. Blocking the host breaks DNS. Point the VM directly at public DNS instead:
+Libvirt runs a DNS server on `192.168.122.1`. Blocking the host breaks DNS. Point the VM directly at public DNS instead.
+
+Ubuntu uses **Netplan** for network configuration — a YAML frontend that generates config for systemd-networkd underneath. Always edit netplan, never networkd directly, or your changes get overwritten.
 
 ```bash
 # Inside VM
-sudo nano /etc/systemd/resolved.conf
+sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 
-Set:
-```
-DNS=8.8.8.8 1.1.1.1
+Make it look like this:
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0:
+      dhcp4: true
+      nameservers:
+        addresses: [8.8.8.8, 1.1.1.1]
 ```
 
+Apply:
 ```bash
-sudo systemctl restart systemd-resolved
+sudo netplan apply
 ```
+
+Verify:
+```bash
+resolvectl status   # should show 8.8.8.8 for enp1s0
+ping google.com     # should resolve
+```
+
+**Why not edit `/etc/systemd/resolved.conf` or use `resolvectl dns` directly?**
+- `resolved.conf` sets global fallback DNS but DHCP-pushed DNS (192.168.122.1) takes priority per-interface
+- `resolvectl dns` is not persistent — resets on reboot
+- Netplan's `nameservers` block sets DNS per-interface and survives reboots because it generates the networkd config with `UseDNS=false` (ignore DHCP-pushed DNS)
 
 ### Verify isolation
 ```bash
@@ -481,7 +501,9 @@ sudo virsh start perfetto-sandbox
 | `Disk already in use` | Leftover VM definition | `sudo virsh destroy perfetto-sandbox && sudo virsh undefine perfetto-sandbox --nvram` |
 | `internal snapshots not supported` | UEFI/pflash firmware | Use disk copy method instead |
 | SSH to VM broken after iptables | INPUT rule too broad | Use stateful rules (NEW/ESTABLISHED) not blanket DROP |
-| DNS broken in VM | Libvirt DNS on 122.1 blocked | Set `DNS=8.8.8.8` in `/etc/systemd/resolved.conf` |
+| DNS broken in VM | Libvirt DNS on 122.1 blocked | Add `nameservers: addresses: [8.8.8.8, 1.1.1.1]` to `/etc/netplan/50-cloud-init.yaml` then `sudo netplan apply` |
+| DNS breaks after reboot | Used `resolvectl dns` which is not persistent | Always use netplan for permanent DNS changes |
+| DNS breaks after Tailscale install | Tailscale takes over DNS routing | Same fix — netplan nameservers with `dhcp4: true` |
 | Can't reach internet from VM | FORWARD rule too broad | Allow `! -d 192.168.1.0/24` traffic through |
 | Claude asking permission for everything | No settings.json | Create `~/.claude/settings.json` with allow rules |
 
